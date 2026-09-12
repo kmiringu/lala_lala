@@ -28,3 +28,8 @@ joblib
 # Only needed to actually run the .ipynb from the command line (jupyter
 # nbconvert --execute) rather than opening it in Jupyter/VS Code directly.
 ipykernel
+
+# app/main.py — the dashboard's local API (see web/index.html for the frontend)
+fastapi
+uvicorn
+pydantic

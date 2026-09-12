@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Riparian Encroachment Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --ink: #1c2321;
+    --muted: #5c6b66;
+    --line: #dde3e0;
+    --bg: #f7f9f8;
+    --panel: #ffffff;
+    --accent: #2f6f4f;
+    --warn: #b5651d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  #layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    height: 100vh;
+  }
+  #sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #map { height: 100vh; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 20px; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .badge {
+    display: inline-block;
+    font-size: 10.5px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+  .badge.calibrated { background: #e4f2ea; color: var(--accent); }
+  .badge.extrapolated { background: #f8ecdd; color: var(--warn); }
+  .row-toggle { cursor: pointer; }
+  .row-toggle:hover { background: #f2f5f3; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }
+  legend { font-size: 12.5px; font-weight: 600; padding: 0 4px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  input[type="text"] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  #picked { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  button {
+    width: 100%; margin-top: 12px; padding: 8px; border: none; border-radius: 6px;
+    background: var(--accent); color: white; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: #a9b8b2; cursor: default; }
+  #status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  #status.error { color: #b3261e; }
+  #status.pending { color: var(--muted); }
+  #status.ok { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="layout">
+  <div id="sidebar">
+    <h1>Riparian Encroachment Dashboard</h1>
+    <p class="sub">Nairobi &amp; environs — buildings within the calibrated 16m river buffer.</p>
+
+    <table id="region-table">
+      <thead>
+        <tr><th>Region</th><th>Encroaching</th><th>Status</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <fieldset>
+      <legend>Predict a new region</legend>
+      <label for="region-name">Region name</label>
+      <input type="text" id="region-name" placeholder="e.g. Ruaka" />
+      <div id="picked">Click the map to set a center point.</div>
+      <button id="predict-btn" disabled>Predict</button>
+      <div id="status"></div>
+    </fieldset>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const NAIROBI_CENTER = [-1.2921, 36.8219];
+
+const map = L.map("map").setView(NAIROBI_CENTER, 11);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: "&copy; OpenStreetMap contributors",
+  maxZoom: 18,
+}).addTo(map);
+
+const regionLayers = {};
+let pickedLatLng = null;
+let pickedMarker = null;
+
+function statusEl() { return document.getElementById("status"); }
+function setStatus(text, kind) {
+  const el = statusEl();
+  el.textContent = text;
+  el.className = kind || "";
+}
+
+function addRegionLayer(regionKey, buildingsGeoJSON, riversGeoJSON, calibrated) {
+  const group = L.layerGroup();
+  if (riversGeoJSON) {
+    L.geoJSON(riversGeoJSON, { style: { color: "#3a7ca5", weight: 2 } }).addTo(group);
+  }
+  const dotColor = calibrated ? "#2f6f4f" : "#b5651d";
+  L.geoJSON(buildingsGeoJSON, {
+    pointToLayer: (feature, latlng) =>
+      L.circleMarker(latlng, {
+        radius: 4,
+        color: dotColor,
+        fillColor: dotColor,
+        fillOpacity: 0.7,
+        weight: 1,
+      }).bindPopup(
+        `<b>${regionKey}</b><br>confidence: ${feature.properties.confidence.toFixed(2)}<br>` +
+        `built-up prob: ${feature.properties.rf_builtup_prob.toFixed(2)}<br>` +
+        `distance to river: ${feature.properties.distance_to_river_m.toFixed(1)}m`
+      ),
+  }).addTo(group);
+  group.addTo(map);
+  regionLayers[regionKey] = group;
+}
+
+function addRegionRow(regionKey, summary) {
+  const tbody = document.querySelector("#region-table tbody");
+  const tr = document.createElement("tr");
+  tr.className = "row-toggle";
+  const badgeClass = summary.calibrated_against_ground_truth ? "calibrated" : "extrapolated";
+  const badgeText = summary.calibrated_against_ground_truth ? "calibrated" : "extrapolated";
+  tr.innerHTML =
+    `<td>${regionKey}</td><td>${summary.encroaching_count}</td>` +
+    `<td><span class="badge ${badgeClass}">${badgeText}</span></td>`;
+  tr.addEventListener("click", () => {
+    const layer = regionLayers[regionKey];
+    if (!layer) return;
+    try { map.fitBounds(layer.getBounds(), { maxZoom: 14 }); } catch (e) {}
+  });
+  tbody.appendChild(tr);
+}
+
+async function loadKnownRegions() {
+  setStatus("Loading known regions…", "pending");
+  try {
+    const summaries = await (await fetch(`${API_BASE}/api/regions`)).json();
+    for (const [regionKey, summary] of Object.entries(summaries)) {
+      const [buildings, rivers] = await Promise.all([
+        fetch(`${API_BASE}/api/regions/${regionKey}/buildings`).then(r => r.json()),
+        fetch(`${API_BASE}/api/regions/${regionKey}/rivers`).then(r => r.json()),
+      ]);
+      addRegionLayer(regionKey, buildings, rivers, summary.calibrated_against_ground_truth);
+      addRegionRow(regionKey, summary);
+    }
+    setStatus("", "");
+  } catch (err) {
+    setStatus(`Couldn't reach the API at ${API_BASE} — is it running? (${err})`, "error");
+  }
+}
+
+map.on("click", (e) => {
+  pickedLatLng = e.latlng;
+  if (pickedMarker) map.removeLayer(pickedMarker);
+  pickedMarker = L.marker(pickedLatLng).addTo(map);
+  document.getElementById("picked").textContent =
+    `Picked: ${pickedLatLng.lat.toFixed(4)}, ${pickedLatLng.lng.toFixed(4)}`;
+  document.getElementById("predict-btn").disabled = false;
+});
+
+document.getElementById("predict-btn").addEventListener("click", async () => {
+  const nameInput = document.getElementById("region-name");
+  const regionKey = nameInput.value.trim();
+  if (!regionKey || !pickedLatLng) return;
+
+  const btn = document.getElementById("predict-btn");
+  btn.disabled = true;
+  setStatus("Running detection + scoring via Earth Engine — this can take a few minutes…", "pending");
+
+  try {
+    const res = await fetch(`${API_BASE}/api/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ region_key: regionKey, lon: pickedLatLng.lng, lat: pickedLatLng.lat }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const data = await res.json();
+    addRegionLayer(regionKey, data.buildings, data.rivers, false);
+    addRegionRow(regionKey, data.summary);
+    setStatus(
+      `Done — ${data.summary.encroaching_count} encroaching structures found (unvalidated, extrapolated threshold).`,
+      "ok"
+    );
+  } catch (err) {
+    setStatus(`Prediction failed: ${err.message || err}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadKnownRegions();
+</script>
+</body>
+</html>
