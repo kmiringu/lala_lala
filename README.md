@@ -92,19 +92,56 @@ Module 4 fuses candidate building detections (Google Open Buildings) with the Ra
 
 ### Primary Output Artifacts
 * `{region}_encroaching_buildings.csv` — Tabular triage data including coordinates, confidence scores, and metric river distances[cite: 2].
-* `{region}_encroaching_buildings.geojson` — Spatial vector layers ready for GIS analysis and mapping.
-* `pipeline_summary.json` — Consolidated execution stats and calibration metadata[cite: 2].
-* `kasarani_encroachment_map.html` — Interactive Folium web visualization map.
+* `{region}_rivers.geojson` — River-line geometry per region, used both for the distance calibration above and by the dashboard below.
+* `known_regions_summary.json` — Consolidated execution stats and calibration metadata for the three known regions.
+
+## Inference on new regions — `src/pipeline.py`
+
+Notebooks 01–03 hardcode Kasarani/Gatharaini/Motoine across separate `REGIONS`/`REGION_CENTERS`
+dicts, so predicting on a region outside those three meant hand-editing notebooks. `src/pipeline.py`
+extracts the inference-only path — river clip → detect structures → RF score → river-distance fusion
+— as `predict_region(region_key, center, radius_km=3)`, reusing the already-trained RF model
+(`rf_baseline.joblib`) and the already-calibrated 16m threshold. No retraining, no WorldCover
+sampling, so it also works on genuinely new AOIs, not just the three above.
+
+Validated two ways: re-running it against Kasarani/Gatharaini/Motoine themselves reproduces the
+Module 4 table above almost exactly (Kasarani 730 vs. 731, Gatharaini 87 exact, Motoine 347 vs.
+348 — small drift expected since Sentinel-2's median composite can shift as new imagery enters the
+collection); and running it against **Ruiruaka River** (Roysambu, never part of this project)
+found 13 encroaching structures, versus 0 for **Thiririka** (a more rural Kiambu river) — consistent
+with encroachment tracking urban density, not just river proximity.
+
+`scripts/regenerate_known_regions.py` reruns all three known regions in one process;
+`scripts/regenerate_one_region.py <name> <lon> <lat>` does one region per process, for machines
+where three in a row risks a low-memory kill.
+
+## Dashboard
+
+A local map dashboard over the above: `app/main.py` (FastAPI) serves the three known regions'
+results and exposes `POST /api/predict`, which runs `predict_region()` live via Earth Engine for a
+region clicked on the map; `web/index.html` (Leaflet, no build step) renders it, centered on
+Nairobi, with new predictions visually flagged as unvalidated/extrapolated rather than calibrated.
+
+```bash
+uvicorn app.main:app --reload   # from the repo root, needs rf_baseline.joblib + Earth Engine auth
+python -m http.server 8080 --directory web   # then open http://127.0.0.1:8080
+```
+
+A prediction call takes on the order of a minute or more depending on building density in the AOI
+— it's a live Earth Engine query, not a lookup.
 
 ## Next Steps
 
-1. **Field-validate Gatharaini and Motoine.** Their 87- and 348-building counts both rely on
+1. **Field-validate Gatharaini and Motoine.** Their 87- and 347-building counts both rely on
    Kasarani's 16m cutoff extrapolated with no local ground truth — get a Pamoja-Trust-style manual
    survey (or equivalent) for at least one of the two to confirm the threshold transfers.
 2. **Wire up the YOLO detector path** once imagery finer than Sentinel-2's 10m (and finer than the
    real median building size found in Module 2, Step 2) is available — `detect_structures` already
    has the stub to fill in.
-3. **Track the version-controlled artifacts** referenced in Module 4 (`{region}_encroaching_buildings.csv/.geojson`,
-   `pipeline_summary.json`, `kasarani_encroachment_map.html`) somewhere persistent — right now they're
-   produced by re-running `03_fusion_and_report.ipynb` but `data/`, `models/`, and `runs/` are all
-   gitignored, so nothing downstream of the notebooks is currently saved anywhere durable.
+3. **Make `/api/predict` asynchronous.** It currently blocks the requesting client for the full
+   Earth Engine run (a minute or more) — fine for a single-user local demo, but a real deployment
+   would want a job queue and a polling/websocket status endpoint instead.
+4. **Persist on-demand predictions.** New regions predicted through the dashboard are only added to
+   the in-browser map for that session — `known_regions_summary.json` isn't updated, so they
+   disappear on refresh. Worth deciding whether ad-hoc predictions should become part of the
+   tracked dataset at all, given they're unvalidated.
