@@ -6,7 +6,7 @@ Step-by-step instructions for getting this project running on your own machine, 
 
 Two things live in this repo:
 
-1. **The Streamlit dashboard** (`app.py`) — reads the *already-generated* data files in `data/processed/` and lets you explore them interactively. This is what most people want, and it's quick to set up (no external accounts needed). These files are committed to the repo, so a fresh clone has everything the dashboard needs out of the box.
+1. **The Streamlit dashboard** (`app.py`) — reads the *already-generated* data files in `data/processed/` and lets you explore them interactively. This is what you probably want, and it's quick to set up (no external accounts needed). These files are committed to the repo, so a fresh clone has everything the dashboard needs out of the box.
 2. **The data + modelling pipeline** (`notebooks/01_preprocessing.ipynb`, `02_modelling.ipynb`, `03_fusion_and_report.ipynb`) — the three notebooks that produced the files in `data/processed/`, in order: preprocessing pulls and cleans the source data, modelling trains the shared Random Forest, and fusion & report applies the distance filter and writes the final artifacts. You only need these if you want to regenerate the data (e.g. a different buffer distance, or retraining the model). Preprocessing needs a free Google Earth Engine account and a heavier geospatial package set.
 
 Sections 1–4 below get the dashboard running. Section 5 covers regenerating the source data.
